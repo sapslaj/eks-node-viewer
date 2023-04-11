@@ -26,6 +26,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/duration"
 
 	"github.com/awslabs/eks-node-viewer/pkg/text"
@@ -186,8 +187,8 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 	firstLine := true
 
 	for _, res := range resources {
-		allocatable := stats.AllocatableResources[res]
-		used := stats.UsedResources[res]
+		allocatable := u.quantizeFormat(stats.AllocatableResources[res])
+		used := u.quantizeFormat(stats.UsedResources[res])
 		pctUsed := 0.0
 		if allocatable.AsApproximateFloat64() != 0 {
 			pctUsed = 100 * (used.AsApproximateFloat64() / allocatable.AsApproximateFloat64())
@@ -226,6 +227,12 @@ func (u *UIModel) computeItemsPerPage(nodes []*Node, b *strings.Builder) int {
 		nodeLines = 1
 	}
 	return ((u.height - headerLines) / nodeLines) - 1
+}
+
+func (u *UIModel) quantizeFormat(q resource.Quantity) resource.Quantity {
+	// Force format to BinarySI to reduce flickering
+	q.Format = resource.BinarySI
+	return q
 }
 
 type tickMsg time.Time
