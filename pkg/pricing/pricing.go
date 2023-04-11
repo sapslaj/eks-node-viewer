@@ -15,10 +15,10 @@ limitations under the License.
 package pricing
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -26,12 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
-	"github.com/aws/aws-sdk-go/service/pricing"
-	"github.com/aws/aws-sdk-go/service/pricing/pricingiface"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/pricing"
+	pricingtypes "github.com/aws/aws-sdk-go-v2/service/pricing/types"
 	"github.com/samber/lo"
 	"go.uber.org/multierr"
 )
@@ -43,8 +41,8 @@ import (
 // fails, the previous pricing information is retained and used which may be the static initial pricing data if pricing
 // updates never succeed.
 type Provider struct {
-	ec2     ec2iface.EC2API
-	pricing pricingiface.PricingAPI
+	ec2     ec2.DescribeSpotPriceHistoryAPIClient
+	pricing pricing.GetProductsAPIClient
 	region  string
 
 	mu                      sync.RWMutex
@@ -77,17 +75,16 @@ func newZonalPricing(defaultPrice float64) zonalPricing {
 // pricingUpdatePeriod is how often we try to update our pricing information after the initial update on startup
 const pricingUpdatePeriod = 12 * time.Hour
 
-// NewPricingAPI returns a pricing API configured based on a particular region
-func NewPricingAPI(sess *session.Session, region string) pricingiface.PricingAPI {
-	if sess == nil {
-		return nil
-	}
+// NewPricingClient returns a pricing API client configured based on a particular region
+func NewPricingClient(cfg aws.Config, region string) *pricing.Client {
 	// pricing API doesn't have an endpoint in all regions
 	pricingAPIRegion := "us-east-1"
 	if strings.HasPrefix(region, "ap-") {
 		pricingAPIRegion = "ap-south-1"
 	}
-	return pricing.New(sess, &aws.Config{Region: aws.String(pricingAPIRegion)})
+	return pricing.NewFromConfig(cfg, func(o *pricing.Options) {
+		o.Region = pricingAPIRegion
+	})
 }
 
 func NewStaticProvider() *Provider {
@@ -98,10 +95,10 @@ func NewStaticProvider() *Provider {
 		spotUpdateTime:     initialPriceUpdate,
 	}
 }
-func NewProvider(ctx context.Context, sess *session.Session, notify func()) *Provider {
+func NewProvider(ctx context.Context, cfg aws.Config, notify func()) *Provider {
 	region := "us-west-2"
-	if aws.StringValue(sess.Config.Region) != "" {
-		region = aws.StringValue(sess.Config.Region)
+	if cfg.Region != "" {
+		region = cfg.Region
 	}
 	p := &Provider{
 		region:             region,
@@ -109,8 +106,8 @@ func NewProvider(ctx context.Context, sess *session.Session, notify func()) *Pro
 		onDemandPrices:     initialOnDemandPrices,
 		spotPrices:         map[string]zonalPricing{},
 		spotUpdateTime:     initialPriceUpdate,
-		ec2:                ec2.New(sess),
-		pricing:            NewPricingAPI(sess, region),
+		ec2:                ec2.NewFromConfig(cfg),
+		pricing:            NewPricingClient(cfg, region),
 		notify:             notify,
 	}
 
@@ -228,14 +225,14 @@ func (p *Provider) updateOnDemandPricing(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		onDemandPrices, onDemandErr = p.fetchOnDemandPricing(ctx,
-			&pricing.Filter{
+			pricingtypes.Filter{
 				Field: aws.String("tenancy"),
-				Type:  aws.String("TERM_MATCH"),
+				Type:  pricingtypes.FilterTypeTermMatch,
 				Value: aws.String("Shared"),
 			},
-			&pricing.Filter{
+			pricingtypes.Filter{
 				Field: aws.String("productFamily"),
-				Type:  aws.String("TERM_MATCH"),
+				Type:  pricingtypes.FilterTypeTermMatch,
 				Value: aws.String("Compute Instance"),
 			})
 	}()
@@ -245,14 +242,14 @@ func (p *Provider) updateOnDemandPricing(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		onDemandMetalPrices, onDemandMetalErr = p.fetchOnDemandPricing(ctx,
-			&pricing.Filter{
+			pricingtypes.Filter{
 				Field: aws.String("tenancy"),
-				Type:  aws.String("TERM_MATCH"),
+				Type:  pricingtypes.FilterTypeTermMatch,
 				Value: aws.String("Dedicated"),
 			},
-			&pricing.Filter{
+			pricingtypes.Filter{
 				Field: aws.String("productFamily"),
-				Type:  aws.String("TERM_MATCH"),
+				Type:  pricingtypes.FilterTypeTermMatch,
 				Value: aws.String("Compute Instance (bare metal)"),
 			})
 	}()
@@ -274,52 +271,62 @@ func (p *Provider) updateOnDemandPricing(ctx context.Context) error {
 	return nil
 }
 
-func (p *Provider) fetchOnDemandPricing(ctx context.Context, additionalFilters ...*pricing.Filter) (map[string]float64, error) {
+func (p *Provider) fetchOnDemandPricing(ctx context.Context, additionalFilters ...pricingtypes.Filter) (map[string]float64, error) {
 	prices := map[string]float64{}
-	filters := append([]*pricing.Filter{
+	filters := append([]pricingtypes.Filter{
 		{
 			Field: aws.String("regionCode"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String(p.region),
 		},
 		{
 			Field: aws.String("serviceCode"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String("AmazonEC2"),
 		},
 		{
 			Field: aws.String("preInstalledSw"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String("NA"),
 		},
 		{
 			Field: aws.String("operatingSystem"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String("Linux"),
 		},
 		{
 			Field: aws.String("capacitystatus"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String("Used"),
 		},
 		{
 			Field: aws.String("marketoption"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String("OnDemand"),
 		}},
 		additionalFilters...)
-	if err := p.pricing.GetProductsPagesWithContext(ctx, &pricing.GetProductsInput{
+	productsPaginator := pricing.NewGetProductsPaginator(p.pricing, &pricing.GetProductsInput{
 		Filters:     filters,
-		ServiceCode: aws.String("AmazonEC2")}, p.onDemandPage(prices)); err != nil {
-		return nil, err
+		ServiceCode: aws.String("AmazonEC2"),
+	})
+	for productsPaginator.HasMorePages() {
+		output, err := productsPaginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		err = p.onDemandPage(prices, output)
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	return prices, nil
 }
 
 // turning off cyclo here, it measures as a 12 due to all of the type checks of the pricing data which returns a deeply
 // nested map[string]interface{}
 // nolint: gocyclo
-func (p *Provider) onDemandPage(prices map[string]float64) func(output *pricing.GetProductsOutput, b bool) bool {
+func (p *Provider) onDemandPage(prices map[string]float64, output *pricing.GetProductsOutput) error {
 	// this isn't the full pricing struct, just the portions we care about
 	type priceItem struct {
 		Product struct {
@@ -338,33 +345,26 @@ func (p *Provider) onDemandPage(prices map[string]float64) func(output *pricing.
 		}
 	}
 
-	return func(output *pricing.GetProductsOutput, b bool) bool {
-		for _, outer := range output.PriceList {
-			var buf bytes.Buffer
-			enc := json.NewEncoder(&buf)
-			if err := enc.Encode(outer); err != nil {
-				log.Printf("encoding %s", err)
-			}
-			dec := json.NewDecoder(&buf)
-			var pItem priceItem
-			if err := dec.Decode(&pItem); err != nil {
-				log.Printf("decoding %s", err)
-			}
-			if pItem.Product.Attributes.InstanceType == "" {
-				continue
-			}
-			for _, term := range pItem.Terms.OnDemand {
-				for _, v := range term.PriceDimensions {
-					price, err := strconv.ParseFloat(v.PricePerUnit.USD, 64)
-					if err != nil || price == 0 {
-						continue
-					}
-					prices[pItem.Product.Attributes.InstanceType] = price
+	for _, outer := range output.PriceList {
+		var pItem priceItem
+		err := json.Unmarshal([]byte(outer), &pItem)
+		if err != nil {
+			return fmt.Errorf("decoding: %w", err)
+		}
+		if pItem.Product.Attributes.InstanceType == "" {
+			continue
+		}
+		for _, term := range pItem.Terms.OnDemand {
+			for _, v := range term.PriceDimensions {
+				price, err := strconv.ParseFloat(v.PricePerUnit.USD, 64)
+				if err != nil || price == 0 {
+					continue
 				}
+				prices[pItem.Product.Attributes.InstanceType] = price
 			}
 		}
-		return true
 	}
+	return nil
 }
 
 // nolint: gocyclo
@@ -372,13 +372,18 @@ func (p *Provider) updateSpotPricing(ctx context.Context) error {
 	totalOfferings := 0
 
 	prices := map[string]map[string]float64{}
-	if err := p.ec2.DescribeSpotPriceHistoryPagesWithContext(ctx, &ec2.DescribeSpotPriceHistoryInput{
-		ProductDescriptions: []*string{aws.String("Linux/UNIX"), aws.String("Linux/UNIX (Amazon VPC)")},
-		// get the latest spot price for each instance type
-		StartTime: aws.Time(time.Now()),
-	}, func(output *ec2.DescribeSpotPriceHistoryOutput, b bool) bool {
+
+	spotPriceHistoryPaginator := ec2.NewDescribeSpotPriceHistoryPaginator(p.ec2, &ec2.DescribeSpotPriceHistoryInput{
+		ProductDescriptions: []string{"Linux/UNIX", "Linux/UNIX (Amazon VPC)"},
+		StartTime:           aws.Time(time.Now()),
+	})
+	for spotPriceHistoryPaginator.HasMorePages() {
+		output, err := spotPriceHistoryPaginator.NextPage(ctx)
+		if err != nil {
+			return err
+		}
 		for _, sph := range output.SpotPriceHistory {
-			spotPriceStr := aws.StringValue(sph.SpotPrice)
+			spotPriceStr := aws.ToString(sph.SpotPrice)
 			spotPrice, err := strconv.ParseFloat(spotPriceStr, 64)
 			// these errors shouldn't occur, but if pricing API does have an error, we ignore the record
 			if err != nil {
@@ -388,17 +393,14 @@ func (p *Provider) updateSpotPricing(ctx context.Context) error {
 			if sph.Timestamp == nil {
 				continue
 			}
-			instanceType := aws.StringValue(sph.InstanceType)
-			az := aws.StringValue(sph.AvailabilityZone)
+			instanceType := string(sph.InstanceType)
+			az := aws.ToString(sph.AvailabilityZone)
 			_, ok := prices[instanceType]
 			if !ok {
 				prices[instanceType] = map[string]float64{}
 			}
 			prices[instanceType][az] = spotPrice
 		}
-		return true
-	}); err != nil {
-		return err
 	}
 	if len(prices) == 0 {
 		return errors.New("no spot pricing found")
@@ -429,22 +431,31 @@ func (p *Provider) LivenessProbe(req *http.Request) error {
 }
 
 func (p *Provider) updateFargatePricing(ctx context.Context) error {
-	filters := append([]*pricing.Filter{
+	filters := append([]pricingtypes.Filter{
 		{
 			Field: aws.String("regionCode"),
-			Type:  aws.String("TERM_MATCH"),
+			Type:  pricingtypes.FilterTypeTermMatch,
 			Value: aws.String(p.region),
 		},
 	})
-	if err := p.pricing.GetProductsPagesWithContext(ctx, &pricing.GetProductsInput{
+	productsPaginator := pricing.NewGetProductsPaginator(p.pricing, &pricing.GetProductsInput{
 		Filters:     filters,
-		ServiceCode: aws.String("AmazonEKS")}, p.fargatePage); err != nil {
-		return err
+		ServiceCode: aws.String("AmazonEKS"),
+	})
+	for productsPaginator.HasMorePages() {
+		output, err := productsPaginator.NextPage(ctx)
+		if err != nil {
+			return err
+		}
+		err = p.fargatePage(output)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (p *Provider) fargatePage(output *pricing.GetProductsOutput, _ bool) bool {
+func (p *Provider) fargatePage(output *pricing.GetProductsOutput) error {
 	// this isn't the full pricing struct, just the portions we care about
 	type priceItem struct {
 		Product struct {
@@ -466,15 +477,10 @@ func (p *Provider) fargatePage(output *pricing.GetProductsOutput, _ bool) bool {
 	}
 
 	for _, outer := range output.PriceList {
-		var buf bytes.Buffer
-		enc := json.NewEncoder(&buf)
-		if err := enc.Encode(outer); err != nil {
-			log.Printf("encoding %s", err)
-		}
-		dec := json.NewDecoder(&buf)
 		var pItem priceItem
-		if err := dec.Decode(&pItem); err != nil {
-			log.Printf("decoding %s", err)
+		err := json.Unmarshal([]byte(outer), &pItem)
+		if err != nil {
+			return fmt.Errorf("decoding: %w", err)
 		}
 		if !strings.Contains(pItem.Product.Attributes.UsageType, "Fargate") {
 			continue
@@ -495,11 +501,10 @@ func (p *Provider) fargatePage(output *pricing.GetProductsOutput, _ bool) bool {
 					p.fargateGBPricePerHour = price
 					p.mu.Unlock()
 				} else {
-					log.Println("unsupported fargate price information found", name)
+					return fmt.Errorf("unsupported fargate price information found: %s", name)
 				}
 			}
 		}
 	}
-	return true
-
+	return nil
 }

@@ -24,8 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/defaults"
-	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go-v2/config"
 	tea "github.com/charmbracelet/bubbletea"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,19 +70,21 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	defaults.SharedCredentialsFilename()
 	pprov := pricing.NewStaticProvider()
 	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
 
 	if !flags.DisablePricing {
-		sess := session.Must(session.NewSessionWithOptions(session.Options{SharedConfigState: session.SharedConfigEnable}))
+		cfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			log.Fatalf("loading aws config: %s", err)
+		}
 		updateAllPrices := func() {
 			m.Cluster().ForEachNode(func(n *model.Node) {
 				n.UpdatePrice(pprov)
 			})
 		}
-		pprov = pricing.NewProvider(ctx, sess, updateAllPrices)
+		pprov = pricing.NewProvider(ctx, cfg, updateAllPrices)
 	}
 
 	var nodeSelector labels.Selector
