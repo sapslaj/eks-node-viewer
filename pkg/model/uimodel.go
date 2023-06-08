@@ -152,16 +152,11 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 				fmt.Fprintf(w, "\tDeleting")
 			} else if n.Cordoned() {
 				fmt.Fprintf(w, "\tCordoned")
-			} else {
-				fmt.Fprintf(w, "\t-")
+			} else if n.Ready() {
+				fmt.Fprintf(w, "\tReady")
 			}
 
-			// node readiness or time we've been waiting for it to be ready
-			if n.Ready() {
-				fmt.Fprintf(w, "\tReady")
-			} else {
-				fmt.Fprintf(w, "\t%s", duration.HumanDuration(time.Since(n.Created())))
-			}
+			fmt.Fprintf(w, "\t%s", duration.HumanDuration(time.Since(n.Created())))
 
 			for _, label := range u.extraLabels {
 				labelValue, ok := n.node.Labels[label]
