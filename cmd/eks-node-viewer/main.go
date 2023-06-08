@@ -75,7 +75,7 @@ func main() {
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
 
 	if !flags.DisablePricing {
-		cfg, err := config.LoadDefaultConfig(ctx)
+		cfg, err := config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(flags.Profile))
 		if err != nil {
 			log.Fatalf("loading aws config: %s", err)
 		}

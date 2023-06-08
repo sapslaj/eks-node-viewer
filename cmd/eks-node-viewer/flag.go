@@ -41,6 +41,7 @@ func init() {
 }
 
 type Flags struct {
+	Profile         string
 	Context         string
 	NodeSelector    string
 	ExtraLabels     string
@@ -62,6 +63,9 @@ func ParseFlags() (Flags, error) {
 
 	flagSet.BoolVar(&flags.Version, "v", false, "Display eks-node-viewer version")
 	flagSet.BoolVar(&flags.Version, "version", false, "Display eks-node-viewer version")
+
+	profileDefault := cfg.getValue("profile", "")
+	flagSet.StringVar(&flags.Profile, "profile", profileDefault, "AWS configuration shared profile name to use for AWS API")
 
 	contextDefault := cfg.getValue("context", "")
 	flagSet.StringVar(&flags.Context, "context", contextDefault, "Name of the kubernetes context to use")
