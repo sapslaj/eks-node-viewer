@@ -134,6 +134,12 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t(%d pods)\t%s%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), n.InstanceType(), priceLabel)
 
+			if n.IsKarpenter() {
+				fmt.Fprintf(w, "\tK")
+			} else {
+				fmt.Fprintf(w, "\t")
+			}
+
 			// node compute type
 			if n.IsOnDemand() {
 				fmt.Fprintf(w, "\tOn-Demand")

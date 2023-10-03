@@ -50,6 +50,11 @@ func NewNode(n *v1.Node) *Node {
 	return node
 }
 
+func (n *Node) IsKarpenter() bool {
+	_, ok := n.node.Labels["karpenter.sh/capacity-type"]
+	return ok
+}
+
 func (n *Node) IsOnDemand() bool {
 	return n.node.Labels["karpenter.sh/capacity-type"] == "on-demand" ||
 		n.node.Labels["eks.amazonaws.com/capacityType"] == "ON_DEMAND"
