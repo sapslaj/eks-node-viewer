@@ -160,6 +160,8 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 				fmt.Fprintf(w, "\tCordoned")
 			} else if n.Ready() {
 				fmt.Fprintf(w, "\tReady")
+			} else {
+				fmt.Fprintf(w, "\t-")
 			}
 
 			fmt.Fprintf(w, "\t%s", duration.HumanDuration(time.Since(n.Created())))
