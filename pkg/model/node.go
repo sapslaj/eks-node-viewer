@@ -241,6 +241,26 @@ func (n *Node) ComputeLabel(labelName string) string {
 	switch labelName {
 	case "eks-node-viewer/node-age":
 		return duration.HumanDuration(time.Since(n.Created()))
+	case "architecture":
+		return n.node.Status.NodeInfo.Architecture
+	case "bootID":
+		return n.node.Status.NodeInfo.BootID
+	case "containerRuntimeVersion":
+		return n.node.Status.NodeInfo.ContainerRuntimeVersion
+	case "kernelVersion":
+		return n.node.Status.NodeInfo.KernelVersion
+	case "kubeProxyVersion":
+		return n.node.Status.NodeInfo.KubeProxyVersion
+	case "kubeletVersion":
+		return n.node.Status.NodeInfo.KubeletVersion
+	case "machineID":
+		return n.node.Status.NodeInfo.MachineID
+	case "operatingSystem":
+		return n.node.Status.NodeInfo.OperatingSystem
+	case "osImage":
+		return n.node.Status.NodeInfo.OSImage
+	case "systemUUID":
+		return n.node.Status.NodeInfo.SystemUUID
 	}
 	// resource based custom labels
 	if match := resourceLabelRe.FindStringSubmatch(labelName); len(match) > 0 {
